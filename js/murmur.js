@@ -123,11 +123,20 @@ function ensureDom() {
         letter-spacing: 0.02em;
       }
       .murmur-picker__hex {
+        flex: 1;
         font-size: 16px;
         padding: 3px 10px;
         border-radius: 999px;
         background: rgba(255, 255, 255, 0.08);
+        color: #f5f7fb;
         font-variant-numeric: tabular-nums;
+        text-align: center;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        outline: none;
+        cursor: pointer;
+      }
+      .murmur-picker__hex:focus {
+        background: rgba(255, 255, 255, 0.16);
       }
       .murmur-picker__body {
         display: grid;
@@ -208,7 +217,7 @@ function ensureDom() {
       <div id="${MURMUR.PANEL_ID}">
         <div class="murmur-picker__top">
           <div class="murmur-picker__title">${MURMUR.TITLE}</div>
-          <div class="murmur-picker__hex">#000000</div>
+          <input type="text" class="murmur-picker__hex" value="#000000" readonly />
         </div>
         <div class="murmur-picker__body">
         <canvas class="murmur-picker__sv" width="286" height="198"></canvas>
@@ -227,7 +236,7 @@ function ensureDom() {
   state.panel = root.querySelector(`#${MURMUR.PANEL_ID}`);
   state.svCanvas = root.querySelector(".murmur-picker__sv");
   state.hueCanvas = root.querySelector(".murmur-picker__hue");
-  state.hexLabel = root.querySelector(".murmur-picker__hex");
+  state.hexInput = root.querySelector(".murmur-picker__hex");
   state.titleLabel = root.querySelector(".murmur-picker__title");
   state.hintLabel = root.querySelector(".murmur-picker__hint");
   state.header = root.querySelector(".murmur-picker__top");
@@ -237,6 +246,44 @@ function ensureDom() {
     event.stopPropagation();
   });
   state.header.addEventListener("pointerdown", onHeaderPointerDown);
+
+  // Input field for hex color entry
+  state.hexInput.addEventListener("click", () => {
+    if (!state.target) return;
+    const current = getCurrentHex();
+    state.hexInput.value = current;
+    state.hexInput.readOnly = false;
+    state.hexInput.select();
+  });
+
+  state.hexInput.addEventListener("blur", () => {
+    validateAndApplyHexFromInput();
+    state.hexInput.readOnly = true;
+  });
+
+  state.hexInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      validateAndApplyHexFromInput();
+      state.hexInput.blur();
+    } else if (event.key === "Escape") {
+      state.hexInput.readOnly = true;
+      renderPicker();
+    } else if (!state.hexInput.readOnly) {
+      // Real-time preview while typing
+      const raw = String(state.hexInput.value || "").trim();
+      if (/^[0-9a-f]{1,6}$/i.test(raw)) {
+        state.hexInput.style.color = "#f5f7fb";
+      } else {
+        state.hexInput.style.color = "rgba(245, 247, 251, 0.5)";
+      }
+    }
+  });
+
+  // Allow clicking and typing in the picker - prevent pointer events from blocking input
+  state.hexInput.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+  });
 
   const swatches = root.querySelector(".murmur-picker__swatches");
   for (const hex of PRESETS) {
@@ -269,8 +316,20 @@ function ensureDom() {
       event.stopPropagation();
       if (hex === "__RESET__") {
         state.hasPickedColor = false;
-        state.hexLabel.textContent = "PICK";
         clearColorFromTarget();
+
+        // Re-detect target to get updated color after clearing
+        const newTarget = detectTarget();
+        if (newTarget && state.hexInput) {
+          state.hexInput.value = newTarget.initialHex.toUpperCase();
+          
+          // Update HSV state to match the node's current color
+          const hsv = hexToHsv(newTarget.initialHex);
+          state.hue = hsv.h;
+          state.saturation = hsv.s;
+          state.value = hsv.v;
+        }
+        
         renderPicker();
         return;
       }
@@ -427,6 +486,37 @@ function hexToHsv(hex) {
   };
 }
 
+// Validate and apply hex from input field (#FFAAXX or FFAAXX format)
+function validateAndApplyHexFromInput() {
+  if (!state.hexInput) return;
+  
+  let raw = String(state.hexInput.value || "").trim();
+  
+  // Remove leading # if present
+  if (raw.startsWith("#")) {
+    raw = raw.slice(1);
+  }
+  
+  // Validate 6-character hex
+  if (/^[0-9a-f]{6}$/i.test(raw)) {
+    const hsv = hexToHsv(`#${raw}`);
+    state.hue = hsv.h;
+    state.saturation = hsv.s;
+    state.value = hsv.v;
+    commitCurrentColor();
+    scheduleRender();
+  } else if (raw === "") {
+    // Empty input - keep current color unchanged
+    const targetColor = detectTarget();
+    if (targetColor && state.hexInput && targetColor.initialHex)
+    {
+      state.hexInput.value = targetColor.initialHex.toUpperCase();
+    }
+    state.hasPickedColor = false;
+    return;
+  }
+}
+
 function getCurrentHex() {
   return rgbToHex(hsvToRgb(state.hue, state.saturation, state.value));
 }
@@ -571,7 +661,9 @@ function commitCurrentColor() {
   const hex = getCurrentHex();
   state.lastPickedHex = hex;
   refreshLastSwatch();
-  state.hexLabel.textContent = hex.toUpperCase();
+  if (state.hexInput) {
+    state.hexInput.value = hex.toUpperCase();
+  }
   applyColorToTarget(hex);
 }
 
@@ -643,7 +735,13 @@ function renderPicker() {
   if (!state.panel || !state.active) return;
   renderSVCanvas();
   renderHueCanvas();
-  state.hexLabel.textContent = state.hasPickedColor ? getCurrentHex().toUpperCase() : "PICK";
+  
+  // Always show current computed color (from HSV state set in beginPicker)
+  const hexValue = getCurrentHex().toUpperCase();
+  
+  if (state.hexInput && state.hexInput.value !== hexValue) {
+    state.hexInput.value = hexValue;
+  }
   state.titleLabel.textContent = MURMUR.TITLE;
   state.hintLabel.textContent = "Click outside picker to close.";
 }
@@ -675,7 +773,8 @@ function showPanel() {
   ensureDom();
   positionPanel();
   state.panel.style.display = "block";
-  renderPicker();
+  // Defer rendering until next animation frame to ensure panel is fully visible first
+  requestAnimationFrame(renderPicker);
 }
 
 function hidePanel() {
@@ -696,12 +795,20 @@ function beginPicker() {
 
   state.active = true;
   state.target = target;
-  state.hasPickedColor = false;
+  
+  // Fill input with current node/group color and mark as picked so it shows immediately
+  const initialHex = target.initialHex || MURMUR.DEFAULT_HEX;
+  if (state.hexInput) {
+    state.hexInput.value = initialHex.toUpperCase();
+  }
 
-  const hsv = hexToHsv(MURMUR.DEFAULT_HEX);
+  const hsv = hexToHsv(initialHex);
   state.hue = hsv.h;
   state.saturation = hsv.s;
   state.value = hsv.v;
+  
+  // Mark as picked so renderPicker shows the color instead
+  state.hasPickedColor = true;
 
   showPanel();
 }
