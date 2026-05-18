@@ -1,0 +1,27 @@
+{
+  "name": "Vibrant Rainbow",
+  "colors": [
+    { "color": "#ff6c6c", "name": "Red" },
+    { "color": "#ffb36c", "name": "Orange" },
+    { "color": "#ffd96c", "name": "Yellow" },
+    { "color": "#ffff6c", "name": "Lemon" },
+    { "color": "#bfff6c", "name": "Chartreuse" },
+    { "color": "#6cff6c", "name": "Green" },
+    { "color": "#6cffbf", "name": "Spring" },
+    { "color": "#6cbfff", "name": "Cyan" },
+    { "color": "#6c6cff", "name": "Blue" },
+    { "color": "#bf6cff", "name": "Purple" },
+    { "color": "#ff6cbf", "name": "Magenta" },
+    { "color": "#ff6c9f", "name": "Pink" },
+    { "color": "#c0c0c0", "name": "Light Gray" },
+    { "color": "#808080", "name": "Medium Gray" },
+    { "color": "#404040", "name": "Dark Gray" },
+    { "color": "#2d5f8a", "name": "Ocean" },
+    { "color": "#1e3a5f", "name": "Deep Sea" },
+    { "color": "#4b0082", "name": "Indigo Dark" },
+    { "color": "#8b0000", "name": "Dark Red" },
+    { "color": "#006400", "name": "Dark Green" }
+  ]
+}
+
+

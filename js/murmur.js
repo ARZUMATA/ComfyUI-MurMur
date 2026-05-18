@@ -15,32 +15,272 @@ const MURMUR = Object.freeze({
   SAFE_RIGHT: 96,
   SAFE_BOTTOM: 96,
   STORAGE_KEY: "murmur_picker_position_v1",
+  RECENT_COLORS_KEY: "murmur_recent_colors",
+  LAST_PICKED_KEY: "murmur_last_picked_hex",
 });
 
-const PRESETS = [
-  "__RESET__",
-  "__LAST__",
-  "#f94144",
-  "#f3722c",
-  "#f8961e",
-  "#f9c74f",
-  "#90be6d",
-  "#43aa8b",
-  "#4d908e",
-  "#577590",
-  "#277da1",
-  "#4f86f7",
-  "#7b61ff",
-  "#c77dff",
-  "#ff4fa3",
-  "#c4c4c4",
-  "#7a7a7a",
-  "#232323",
-  "#0f2a66",
-  "#233b8b",
-  "#4a1d6f",
-  "#5b1232",
-];
+const PALETTES = {
+  DEFAULT: [
+    { color: "#f94144", name: "Crimson" },
+    { color: "#f3722c", name: "Vermilion" },
+    { color: "#f8961e", name: "Amber" },
+    { color: "#f9c74f", name: "Gold" },
+    { color: "#90be6d", name: "Lime" },
+    { color: "#43aa8b", name: "Jade" },
+    { color: "#4d908e", name: "Teal" },
+    { color: "#577590", name: "Steel" },
+    { color: "#277da1", name: "Cobalt" },
+    { color: "#4f86f7", name: "Azure" },
+    { color: "#7b61ff", name: "Violet" },
+    { color: "#c77dff", name: "Orchid" },
+    { color: "#ff4fa3", name: "Rose" },
+    { color: "#c4c4c4", name: "Silver" },
+    { color: "#7a7a7a", name: "Gray" },
+    { color: "#232323", name: "Charcoal" },
+    { color: "#0f2a66", name: "Navy" },
+    { color: "#233b8b", name: "Indigo" },
+    { color: "#4a1d6f", name: "Plum" },
+    { color: "#5b1232", name: "Burgundy" },
+  ]
+};
+
+/** @type {Record<string, Array<{color:string, name:string}>>} External palettes loaded at runtime */
+const EXTERNAL_PALETTES = {};
+
+async function loadExternalPaletteFiles() {
+  try {
+    // Fetch palettes from the server as JSON files.
+    // Each file should be at /extensions/ComfyUI-MurMur/js/palettes/<name>.json
+    // Format: { "name": "Palette Name", "colors": [{ color: "#hex", name: "ColorName" }] }
+    const baseUrl = window.location.origin + '/extensions/ComfyUI-MurMur/palettes/';
+    
+    // Load manifest.json which lists all available palette files
+    const manifestResp = await fetch(baseUrl + 'manifest.json');
+
+    if (!manifestResp.ok) {
+      console.warn("[MurMur] Failed to load manifest, skipping external palettes");
+      return;
+    }
+    
+    const manifest = await manifestResp.json();
+    const paletteFiles = manifest.files || [];
+
+    for (const file of paletteFiles) {
+      try {
+        const resp = await fetch(baseUrl + file);
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        
+        if (!data?.name || !Array.isArray(data.colors)) continue;
+        
+        EXTERNAL_PALETTES[data.name] = data.colors;
+      } catch (_) {}
+    }
+  } catch (err) {
+    console.warn("[MurMur] Failed to load external palette files:", err);
+  }
+}
+
+/**
+ * Load ComfyUI node colors from LGraphCanvas.node_colors into a dynamic palette.
+ */
+async function loadComfyUIDynamicPalette() {
+  try {
+    if (typeof LGraphCanvas === 'undefined') {
+      await new Promise(resolve => {
+        const checkInterval = setInterval(() => {
+          if (typeof LGraphCanvas !== 'undefined') {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 100);
+      });
+    }
+
+    if (typeof LGraphCanvas === 'undefined' || !LGraphCanvas.node_colors) {
+      return;
+    }
+
+    const nodeColors = LGraphCanvas.node_colors;
+    if (typeof nodeColors !== 'object') return;
+
+    const paletteName = "COMFYUI";
+    const entriesMap = new Map();
+
+    // Collect the "color" property from each node color entry.
+    // LGraphCanvas.node_colors has structure like:
+    //   black: { bgcolor: "#000", color: "#222", groupcolor: "#444" }
+    //   blue: { bgcolor: "#1e3a5f", color: "#2d5f8a", groupcolor: "#4b7eb5" }
+    for (const key of Object.keys(nodeColors)) {
+      const colorData = nodeColors[key];
+      if (typeof colorData === 'object' && colorData !== null) {
+        // Extract the "color" property specifically
+        if ("color" in colorData && typeof colorData.color === 'string') {
+          let hex = colorData.color;
+          // Handle both 3-digit and 6-digit hex codes
+          if (/^#[0-9a-f]{6}$/i.test(hex)) {
+            hex = hex.toLowerCase();
+          } else if (/^#[0-9a-f]{3}$/i.test(hex)) {
+            // Expand 3-digit hex to 6-digit
+            hex = `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`.toLowerCase();
+          } else {
+            continue;
+          }
+          if (!entriesMap.has(hex)) {
+            entriesMap.set(hex, { color: hex, name: key.charAt(0).toUpperCase() + key.slice(1) });
+          }
+        }
+      } else if (typeof colorData === 'string' && /^#[0-9a-f]{6}$/i.test(colorData)) {
+        const hex = colorData.toLowerCase();
+        if (!entriesMap.has(hex)) {
+          entriesMap.set(hex, { color: hex, name: key.charAt(0).toUpperCase() + key.slice(1) });
+        }
+      }
+    }
+
+    // Deduplicate and store as array of {color, name} objects
+    const uniqueEntries = [...entriesMap.values()];
+    if (uniqueEntries.length > 0) {
+      EXTERNAL_PALETTES[paletteName] = uniqueEntries;
+    }
+  } catch (err) {
+    console.warn("[MurMur] Failed to load ComfyUI dynamic palette:", err);
+  }
+}
+
+/**
+ * Get all available palettes including external ones.
+ * Order: built-in palettes first, then COMFYUI, then other external palettes.
+ * @returns {{name: string, colors: string[]}[]} Array of palette objects
+ */
+function getAllPalettes() {
+  const result = [];
+
+  // Built-in palettes
+  for (const [name, entries] of Object.entries(PALETTES)) {
+    const colors = normalizePaletteEntries(entries).map(e => e.color);
+    result.push({ name, colors });
+  }
+
+  // COMFYUI palette (if loaded) — always right after built-ins
+  if (EXTERNAL_PALETTES["COMFYUI"]) {
+    const colors = normalizePaletteEntries(EXTERNAL_PALETTES["COMFYUI"]).map(e => e.color);
+    result.push({ name: "COMFYUI", colors });
+  }
+
+  // Other external palettes (everything except COMFYUI)
+  for (const [name, entries] of Object.entries(EXTERNAL_PALETTES)) {
+    if (name === "COMFYUI") continue;
+    const colors = normalizePaletteEntries(entries).map(e => e.color);
+    result.push({ name, colors });
+  }
+
+  return result;
+}
+
+/**
+ * Get palette colors by name (including external palettes).
+* @param {string} name
+* @returns {{color: string, name: string}[]} Array of {color, name} objects
+ */
+function getPaletteEntries(name) {
+  if (PALETTES[name]) return normalizePaletteEntries(PALETTES[name]);
+  if (EXTERNAL_PALETTES[name]) return normalizePaletteEntries(EXTERNAL_PALETTES[name]);
+  return [];
+}
+
+/**
+ * Normalize palette entries to {color, name} format.
+ * Handles both string format ["#fff"] and object format [{color: "#fff", name: "White"}].
+ * @param {string[]|Array<{color:string, name?:string}>} entries
+ * @returns {{color: string, name: string}[]}
+ */
+function normalizePaletteEntries(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries.map(entry => {
+    if (typeof entry === 'object' && entry !== null && typeof entry.color === 'string') {
+      const hex = entry.color;
+      const name = entry.name || hex.toUpperCase();
+      return { color: hex, name };
+    }
+    if (typeof entry === 'string' && /^#[0-9a-f]{6}$/i.test(entry)) {
+      return { color: entry.toLowerCase(), name: entry.toUpperCase() };
+    }
+    return null;
+  }).filter(Boolean);
+}
+
+/**
+ * Save selected palette (including external ones).
+ * @param {string} name
+ */
+function saveSelectedPalette(name) {
+  try {
+    if (PALETTES[name] || EXTERNAL_PALETTES[name]) {
+      localStorage.setItem("murmur_selected_palette", name);
+    }
+  } catch (_) {}
+}
+
+/**
+ * Get current palette name from storage, validating against all available palettes.
+ * @returns {string}
+ */
+function getCurrentPalette() {
+  try {
+    const saved = localStorage.getItem("murmur_selected_palette");
+    if (saved && (PALETTES[saved] || EXTERNAL_PALETTES[saved])) return saved;
+  } catch (_) {}
+  return DEFAULT_PALETTE_NAME;
+}
+
+const DEFAULT_PALETTE_NAME = "DEFAULT";
+
+// Track recent colors (up to 5) - initialized from localStorage below
+function loadRecentColors() {
+  try {
+    const raw = localStorage.getItem(MURMUR.RECENT_COLORS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (_) {}
+  return [];
+}
+
+let recentColors = loadRecentColors();
+
+function saveRecentColors() {
+  try {
+    localStorage.setItem(MURMUR.RECENT_COLORS_KEY, JSON.stringify(recentColors));
+  } catch (_) {}
+}
+
+function loadLastPickedHex() {
+  try {
+    const raw = localStorage.getItem(MURMUR.LAST_PICKED_KEY);
+    if (raw && /^#[0-9a-f]{6}$/i.test(raw)) return raw.toLowerCase();
+  } catch (_) {}
+  return null;
+}
+
+function saveLastPickedHex(hex) {
+  try {
+    localStorage.setItem(MURMUR.LAST_PICKED_KEY, hex);
+  } catch (_) {}
+}
+
+function addRecentColor(hex) {
+  // Remove if already exists
+  recentColors = recentColors.filter(c => c !== hex);
+  // Add to front
+  recentColors.unshift(hex);
+  // Keep only 5
+  if (recentColors.length > 5) {
+    recentColors.pop();
+  }
+  saveRecentColors();
+}
 
 const EMOJI_PRESETS = [
   "🔥", "🧬", "🤖", "💦", "🍭", "🔮", "🦄", "💖",
@@ -56,7 +296,7 @@ const state = {
   saturation: 0.68,
   value: 0.97,
   hasPickedColor: false,
-  lastPickedHex: "#0f5c4a",
+  lastPickedHex: loadLastPickedHex() || null,
   root: null,
   panel: null,
   svCanvas: null,
@@ -67,6 +307,7 @@ const state = {
   header: null,
   emojiGrid: null,
   swatchButtons: [],
+  renderRecentRowFn: null,
   raf: 0,
   draggingSV: false,
   draggingHue: false,
@@ -158,12 +399,47 @@ function ensureDom() {
         height: 198px;
         cursor: ns-resize;
       }
-      .murmur-picker__swatches {
-        display: grid;
-        grid-template-columns: repeat(11, 1fr);
-        column-gap: 2px;
-        row-gap: 5px;
-        margin-top: 10px;
+      .murmur-picker__controls {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-top: 8px;
+        padding: 4px 2px;
+      }
+      .murmur-picker__divider-v {
+        width: 1px;
+        height: 20px;
+        background: rgba(255, 255, 255, 0.16);
+        flex-shrink: 0;
+      }
+      .murmur-picker__palette-select {
+        font-size: 10px;
+        padding: 2px 4px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #f5f7fb;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        outline: none;
+        cursor: pointer;
+        max-width: 90px;
+      }
+      .murmur-picker__palette-select option {
+        background: #141518;
+        color: #f5f7fb;
+      }
+      .murmur-picker__recent-label {
+        font-size: 9px;
+        color: rgba(245, 247, 251, 0.45);
+        white-space: nowrap;
+      }
+      .murmur-picker__recent-swatch {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        cursor: pointer;
+        padding: 0;
+        outline: none;
       }
       .murmur-picker__swatch {
         width: 100%;
@@ -176,6 +452,21 @@ function ensureDom() {
         padding: 0;
         outline: none;
         box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+      }
+      .murmur-picker__swatch--reset {
+        background: #ffffff;
+        border: 1px solid rgba(255, 255, 255, 0.28);
+        position: relative;
+      }
+      .murmur-picker__swatch--last {
+        border: 1px solid rgba(255, 255, 255, 0.4);
+      }
+      .murmur-picker__palette-row {
+        display: grid;
+        grid-template-columns: repeat(10, 1fr);
+        column-gap: 2px;
+        row-gap: 5px;
+        margin-top: 6px;
       }
       .murmur-picker__emoji-grid {
         display: grid;
@@ -223,7 +514,17 @@ function ensureDom() {
         <canvas class="murmur-picker__sv" width="286" height="198"></canvas>
         <canvas class="murmur-picker__hue" width="22" height="198"></canvas>
       </div>
-      <div class="murmur-picker__swatches"></div>
+      <div class="murmur-picker__controls">
+        <button type="button" class="murmur-picker__swatch murmur-picker__swatch--reset" data-action="reset" title="Reset color"><span style="position:absolute;inset:0;display:block;border-radius:999px;background:linear-gradient(135deg,transparent 46%,#ff5a5f 46%,#ff5a5f 54%,transparent 54%)"></span></button>
+        <button type="button" class="murmur-picker__swatch murmur-picker__swatch--last" data-action="last" title="Last picked color"></button>
+        <div class="murmur-picker__divider-v"></div>
+        <select class="murmur-picker__palette-select" data-action="palette">
+          ${(() => { const all = getAllPalettes(); return all.map(p => `<option value="${p.name}">${p.name}</option>`).join(''); })()}
+        </select>
+        <span class="murmur-picker__recent-label">Recent:</span>
+      </div>
+      <div id="murmur-picker-recent-row" style="display:flex;gap:2px;margin-top:4px;padding:0 2px;"></div>
+      <div class="murmur-picker__palette-row"></div>
       <div class="murmur-picker__divider"></div>
       <div class="murmur-picker__emoji-grid"></div>
       <div class="murmur-picker__hint">Hold Tab, move mouse, release to hide.</div>
@@ -285,65 +586,119 @@ function ensureDom() {
     event.stopPropagation();
   });
 
-  const swatches = root.querySelector(".murmur-picker__swatches");
-  for (const hex of PRESETS) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "murmur-picker__swatch";
-    button.dataset.swatch = hex;
-    if (hex === "__LAST__") {
-      button.style.background = state.lastPickedHex;
-      button.title = `Last picked: ${state.lastPickedHex}`;
-    } else if (hex === "__RESET__") {
-      button.style.background = "#ffffff";
-      button.style.border = "1px solid rgba(255,255,255,0.28)";
-      button.style.position = "relative";
-      button.title = "Reset color";
-      button.innerHTML = `<span style="
-        position:absolute;
-        inset:0;
-        display:block;
-        border-radius:999px;
-        background:
-          linear-gradient(135deg, transparent 46%, #ff5a5f 46%, #ff5a5f 54%, transparent 54%);
-      "></span>`;
-    } else {
-      button.style.background = hex;
-      button.title = hex;
-    }
-    button.addEventListener("pointerdown", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (hex === "__RESET__") {
-        state.hasPickedColor = false;
-        clearColorFromTarget();
+  // Control row elements
+  const resetBtn = root.querySelector('.murmur-picker__swatch--reset');
+  const lastBtn = root.querySelector('.murmur-picker__swatch--last');
+  const paletteSelect = root.querySelector('.murmur-picker__palette-select');
+  const recentRow = root.querySelector('#murmur-picker-recent-row');
+  const paletteRow = root.querySelector('.murmur-picker__palette-row');
 
-        // Re-detect target to get updated color after clearing
-        const newTarget = detectTarget();
-        if (newTarget && state.hexInput) {
-          state.hexInput.value = newTarget.initialHex.toUpperCase();
-          
-          // Update HSV state to match the node's current color
-          const hsv = hexToHsv(newTarget.initialHex);
-          state.hue = hsv.h;
-          state.saturation = hsv.s;
-          state.value = hsv.v;
-        }
-        
-        renderPicker();
-        return;
-      }
-      const pickedHex = hex === "__LAST__" ? state.lastPickedHex : hex;
-      const hsv = hexToHsv(pickedHex);
+  // Set initial palette selection from storage
+  paletteSelect.value = getCurrentPalette();
+
+  // Reset button handler
+  resetBtn.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    state.hasPickedColor = false;
+    clearColorFromTarget();
+
+    const newTarget = detectTarget();
+    if (newTarget && state.hexInput) {
+      state.hexInput.value = newTarget.initialHex.toUpperCase();
+      const hsv = hexToHsv(newTarget.initialHex);
       state.hue = hsv.h;
       state.saturation = hsv.s;
       state.value = hsv.v;
-      commitCurrentColor();
-      renderPicker();
-    });
-    swatches.appendChild(button);
-    state.swatchButtons.push(button);
+    }
+    renderPicker();
+  });
+
+  // Last button handler - use first recent color, fallback to lastPickedHex
+  lastBtn.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const pickedHex = recentColors[0] || state.lastPickedHex;
+    if (!recentColors.includes(state.lastPickedHex) && state.lastPickedHex) {
+      // Ensure lastPickedHex is in recent
+    }
+    const hsv = hexToHsv(pickedHex);
+    state.hue = hsv.h;
+    state.saturation = hsv.s;
+    state.value = hsv.v;
+    commitCurrentColor();
+    renderPicker();
+  });
+
+  // Palette selector change handler
+  paletteSelect.addEventListener("change", () => {
+    saveSelectedPalette(paletteSelect.value);
+    renderPaletteRow(getCurrentPalette());
+    renderRecentRow();
+  });
+
+  // Render recent colors row
+  function renderRecentRow() {
+    recentRow.innerHTML = "";
+    for (const hex of recentColors) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "murmur-picker__recent-swatch";
+      btn.style.background = hex;
+      btn.title = hex;
+      btn.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const hsv = hexToHsv(hex);
+        state.hue = hsv.h;
+        state.saturation = hsv.s;
+        state.value = hsv.v;
+        commitCurrentColor();
+        renderPicker();
+      });
+      recentRow.appendChild(btn);
+    }
   }
+
+  /**
+  * Render palette row for a given palette name.
+  * @param {string} paletteName
+  */
+  function renderPaletteRow(paletteName) {
+    const paletteRow = state.root?.querySelector('.murmur-picker__palette-row');
+    if (!paletteRow) return;
+
+    paletteRow.innerHTML = "";
+    const entries = getPaletteEntries(paletteName);
+
+    for (const { color, name } of entries) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "murmur-picker__swatch";
+      btn.style.background = color;
+      btn.title = `${name} - ${color.toUpperCase()}`;
+      btn.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const hsv = hexToHsv(color);
+        state.hue = hsv.h;
+        state.saturation = hsv.s;
+        state.value = hsv.v;
+        commitCurrentColor();
+        renderPicker();
+      });
+      paletteRow.appendChild(btn);
+    }
+  }
+
+  // Initialize rows
+  renderRecentRow();
+  renderPaletteRow(getCurrentPalette());
+
+  // Store references for external calls (async callbacks need these)
+  state.renderPaletteRowFn = renderPaletteRow;
+  state.renderRecentRowFn = renderRecentRow;
+
 
   for (const emoji of EMOJI_PRESETS) {
     const button = document.createElement("button");
@@ -521,11 +876,14 @@ function getCurrentHex() {
   return rgbToHex(hsvToRgb(state.hue, state.saturation, state.value));
 }
 
-function refreshLastSwatch() {
-  const button = state.swatchButtons.find((item) => item?.dataset?.swatch === "__LAST__");
-  if (!button) return;
-  button.style.background = state.lastPickedHex;
-  button.title = `Last picked: ${state.lastPickedHex}`;
+function refreshLastSwatch(hex) {
+  // Update last swatch and recent row
+  const lastBtn = state.panel?.querySelector('[data-action="last"]');
+  if (lastBtn && hex) {
+    lastBtn.style.background = hex;
+    lastBtn.title = `Last picked: ${hex}`;
+  }
+  state.renderRecentRowFn?.();
 }
 
 function getSelectedNodes() {
@@ -555,6 +913,43 @@ function getSelectedGroup() {
   return null;
 }
 
+/**
+ * Check if a node is an rgthree-comfy Label virtual node.
+ * These have a custom draw method and use properties["fontColor"] for text color.
+ * @param {*} node
+ * @returns {boolean}
+ */
+function isRgthreeLabel(node) {
+  return node && typeof node.draw === "function" && node.properties && typeof node.properties.fontColor === "string";
+}
+
+/**
+ * Get the primary color property for a node (handles rgthree Label specially).
+ * @param {*} node
+ * @returns {string|null}
+ */
+function getNodePrimaryColor(node) {
+  if (isRgthreeLabel(node)) {
+    return normalizeHex(node.properties?.fontColor);
+  }
+  return normalizeHex(node.bgcolor || node.color);
+}
+
+/**
+ * Set the primary color property for a node (handles rgthree Label specially).
+ * @param {*} node
+ * @param {string} hex
+ */
+function setNodePrimaryColor(node, hex) {
+  if (isRgthreeLabel(node)) {
+    node.properties = node.properties || {};
+    node.properties.fontColor = hex;
+  } else {
+    node.color = hex;
+    node.bgcolor = hex;
+  }
+}
+
 function detectTarget() {
   const group = getSelectedGroup();
   if (group) {
@@ -569,15 +964,19 @@ function detectTarget() {
   const nodes = getSelectedNodes();
   if (!nodes.length) return null;
 
+  // Check if all selected nodes are rgthree Labels (special handling)
+  const allLabels = nodes.every(isRgthreeLabel);
+  const hasLabels = nodes.some(isRgthreeLabel);
+
   const label = nodes.length === 1
     ? `Node: ${nodes[0]?.title || nodes[0]?.type || "Untitled"}`
     : `Nodes: ${nodes.length}`;
 
   return {
-    kind: "nodes",
+    kind: allLabels ? "rgthree_labels" : "nodes",
     items: nodes,
     label,
-    initialHex: normalizeHex(nodes[0]?.bgcolor || nodes[0]?.color || MURMUR.DEFAULT_HEX),
+    initialHex: getNodePrimaryColor(nodes[0]) || MURMUR.DEFAULT_HEX,
   };
 }
 
@@ -596,14 +995,25 @@ function clearColorFromTarget() {
   if (state.target.kind === "group") {
     for (const group of state.target.items) {
       try { delete group.color; } catch (_) { group.color = undefined; }
-      if ("bgcolor" in group) {
-        try { delete group.bgcolor; } catch (_) { group.bgcolor = undefined; }
+    }
+  } else if (state.target.kind === "rgthree_labels") {
+    for (const node of state.target.items) {
+      if (isRgthreeLabel(node)) {
+        try { delete node.properties.fontColor; } catch (_) {}
+      } else {
+        try { delete node.color; } catch (_) { node.color = undefined; }
+        try { delete node.bgcolor; } catch (_) { node.bgcolor = undefined; }
       }
+      node.setDirtyCanvas?.(true, true);
     }
   } else {
     for (const node of state.target.items) {
-      try { delete node.color; } catch (_) { node.color = undefined; }
-      try { delete node.bgcolor; } catch (_) { node.bgcolor = undefined; }
+      if (isRgthreeLabel(node)) {
+        try { delete node.properties.fontColor; } catch (_) {}
+      } else {
+        try { delete node.color; } catch (_) { node.color = undefined; }
+        try { delete node.bgcolor; } catch (_) { node.bgcolor = undefined; }
+      }
       node.setDirtyCanvas?.(true, true);
     }
   }
@@ -641,12 +1051,15 @@ function applyColorToTarget(hex) {
   if (state.target.kind === "group") {
     for (const group of state.target.items) {
       group.color = hex;
-      if ("bgcolor" in group) group.bgcolor = hex;
+    }
+  } else if (state.target.kind === "rgthree_labels") {
+    for (const node of state.target.items) {
+      setNodePrimaryColor(node, hex);
+      node.setDirtyCanvas?.(true, true);
     }
   } else {
     for (const node of state.target.items) {
-      node.color = hex;
-      node.bgcolor = hex;
+      setNodePrimaryColor(node, hex);
       node.setDirtyCanvas?.(true, true);
     }
   }
@@ -658,13 +1071,13 @@ function applyColorToTarget(hex) {
 
 function commitCurrentColor() {
   state.hasPickedColor = true;
-  const hex = getCurrentHex();
-  state.lastPickedHex = hex;
-  refreshLastSwatch();
+  state.lastPickedHex = getCurrentHex();
+  saveLastPickedHex(state.lastPickedHex);
   if (state.hexInput) {
-    state.hexInput.value = hex.toUpperCase();
+    state.hexInput.value = state.lastPickedHex.toUpperCase();
   }
-  applyColorToTarget(hex);
+  applyColorToTarget(state.lastPickedHex);
+  refreshLastSwatch(state.lastPickedHex);
 }
 
 function renderSVCanvas() {
@@ -769,8 +1182,36 @@ function applyPanelPosition(x, y, persist = false) {
   if (persist) savePanelPosition();
 }
 
+/** @type {boolean} */
+let _comfyUIPaletteInitialized = false;
+
+async function ensureComfyUIPaletteLoaded() {
+  if (_comfyUIPaletteInitialized) return;
+  _comfyUIPaletteInitialized = true;
+  await loadComfyUIDynamicPalette();
+}
+
+// Load external palette files at startup
+loadExternalPaletteFiles();
+
 function showPanel() {
   ensureDom();
+  // Load ComfyUI palette on first panel open (ensures all extensions have registered their colors)
+  ensureComfyUIPaletteLoaded().then(() => {
+    // Re-render palette row with updated options if COMFYUI palette was added
+    const paletteRow = state.root?.querySelector('.murmur-picker__palette-row');
+    const paletteSelect = state.root?.querySelector('.murmur-picker__palette-select');
+    if (paletteSelect) {
+      // Update dropdown options to include newly loaded palettes
+      const all = getAllPalettes();
+      paletteSelect.innerHTML = all.map(p => `<option value="${p.name}">${p.name}</option>`).join('');
+      // Restore current selection
+      paletteSelect.value = getCurrentPalette();
+    }
+    if (paletteRow) {
+      state.renderPaletteRowFn?.(getCurrentPalette());
+    }
+  });
   positionPanel();
   state.panel.style.display = "block";
   // Defer rendering until next animation frame to ensure panel is fully visible first
@@ -778,6 +1219,13 @@ function showPanel() {
 }
 
 function hidePanel() {
+  // Add current color to recents only when closing, and only if not already there
+  if (state.hasPickedColor && state.lastPickedHex) {
+    if (!recentColors.includes(state.lastPickedHex)) {
+      addRecentColor(state.lastPickedHex);
+      state.renderRecentRowFn?.();
+    }
+  }
   state.active = false;
   state.target = null;
   state.draggingSV = false;
